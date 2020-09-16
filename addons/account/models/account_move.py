@@ -303,7 +303,7 @@ class AccountMove(models.Model):
     @api.onchange('invoice_date')
     def _onchange_invoice_date(self):
         if self.invoice_date:
-            if not self.invoice_payment_term_id:
+            if not self.invoice_payment_term_id and (not self.invoice_date_due or self.invoice_date_due < self.invoice_date):
                 self.invoice_date_due = self.invoice_date
             self.date = self.invoice_date
             self._onchange_currency()
@@ -2311,6 +2311,10 @@ class AccountMove(models.Model):
         ctx = dict(
             default_model='account.move',
             default_res_id=self.id,
+            # For the sake of consistency we need a default_res_model if
+            # default_res_id is set. Not renaming default_model as it can
+            # create many side-effects.
+            default_res_model='account.move',
             default_use_template=bool(template),
             default_template_id=template and template.id or False,
             default_composition_mode='comment',
@@ -3637,10 +3641,12 @@ class AccountMoveLine(models.Model):
         #     - or some moves are cash basis reconciled and we make sure they are all fully reconciled
 
         digits_rounding_precision = amls[0].company_id.currency_id.rounding
+        caba_reconciled_amls = cash_basis_partial.mapped('debit_move_id') + cash_basis_partial.mapped('credit_move_id')
+        caba_connected_amls = amls.filtered(lambda x: x.move_id.tax_cash_basis_rec_id) + caba_reconciled_amls
+        matched_percentages = caba_connected_amls._get_matched_percentage()
         if (
-                (
-                    not cash_basis_partial or (cash_basis_partial and all([p >= 1.0 for p in amls._get_matched_percentage().values()]))
-                ) and
+                all(matched_percentages[aml.move_id.id] >= 1.0 for aml in caba_connected_amls)
+                and
                 (
                     currency and float_is_zero(total_amount_currency, precision_rounding=currency.rounding) or
                     multiple_currency and float_compare(total_debit, total_credit, precision_rounding=digits_rounding_precision) == 0
